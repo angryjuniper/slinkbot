@@ -1,0 +1,248 @@
+services:
+  # Services will be added here in the following steps 
+  gluetun:
+    image: qmcgaw/gluetun
+    container_name: gluetun
+    cap_add:
+      - NET_ADMIN
+    devices:
+      - /dev/net/tun:/dev/net/tun
+    volumes:
+      - '${ROOT_DIR}/gluetun:/gluetun'
+    environment:
+      - VPN_SERVICE_PROVIDER=${VPN_SERVICE_PROVIDER}
+      - VPN_TYPE=${VPN_TYPE}
+      - DOT_NETSHIELD=${DOT_NETSHIELD}
+      - WIREGUARD_SERVER=${WIREGUARD_SERVER}
+      - WIREGUARD_PRIVATE_KEY=${WIREGUARD_PRIVATE_KEY}
+      - WIREGUARD_ADDRESSES=${WIREGUARD_ADDRESSES}
+      - TZ=${TZ}
+      # This is the magic part. All other services will connect to this network.
+      # It ensures their traffic can ONLY go through the VPN.
+    ports:
+      # Web UIs for services that will be added later
+      - "8080:8080" # NZBGet
+      - "7878:7878" # Radarr
+      - "8989:8989" # Sonarr
+      - "9696:9696" # Prowlarr
+      - "5055:5055" # Jellyseerr
+      # Jellyfin Ports
+      - "8096:8096" # Jellyfin HTTP
+      - "8920:8920" # Jellyfin HTTPS (Optional, if you enable it internally)
+      - "7359:7359/udp" # Jellyfin Auto-Discovery
+      - "1900:1900/udp" # Jellyfin DLNA
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:9999/v1/healthcheck >/dev/null || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
+    restart: unless-stopped
+
+  cloudflared:
+    image: cloudflare/cloudflared:latest
+    container_name: cloudflared
+    # This service connects to the default docker network for a direct internet connection.
+    # It will connect to other services using their service name, e.g., "gluetun".
+    command: tunnel --no-autoupdate run --token ${CLOUDFLARE_TUNNEL_TOKEN}
+    depends_on:
+      gluetun:
+        condition: service_healthy
+    restart: unless-stopped
+
+  prowlarr:
+    image: lscr.io/linuxserver/prowlarr:latest
+    container_name: prowlarr
+    network_mode: "service:gluetun"
+    volumes:
+      - '${CONFIG_DIR}/prowlarr:/config'
+    environment:
+      - PUID=${PUID}
+      - PGID=${PGID}
+      - TZ=${TZ}
+    depends_on:
+      gluetun:
+        condition: service_healthy
+    restart: unless-stopped
+
+  radarr:
+    image: lscr.io/linuxserver/radarr:latest
+    container_name: radarr
+    network_mode: "service:gluetun"
+    volumes:
+      - '${CONFIG_DIR}/radarr:/config'
+      - '${DATA_DIR}/movies:/movies'
+      - '${DATA_DIR}/downloads:/downloads'
+    environment:
+      - PUID=${PUID}
+      - PGID=${PGID}
+      - TZ=${TZ}
+    depends_on:
+      gluetun:
+        condition: service_healthy
+    restart: unless-stopped
+
+  sonarr:
+    image: lscr.io/linuxserver/sonarr:latest
+    container_name: sonarr
+    network_mode: "service:gluetun"
+    volumes:
+      - '${CONFIG_DIR}/sonarr:/config'
+      - '${DATA_DIR}/tv:/tv'
+      - '${DATA_DIR}/anime:/anime'
+      - '${DATA_DIR}/downloads:/downloads'
+    environment:
+      - PUID=${PUID}
+      - PGID=${PGID}
+      - TZ=${TZ}
+    depends_on:
+      gluetun:
+        condition: service_healthy
+    restart: unless-stopped
+
+  sabnzbd:
+    image: lscr.io/linuxserver/sabnzbd:latest
+    container_name: sabnzbd
+    network_mode: "service:gluetun"
+    volumes:
+      - '${CONFIG_DIR}/sabnzbd:/config'
+      - '${DATA_DIR}/downloads:/downloads'
+      - '${DATA_DIR}/incomplete-downloads:/incomplete-downloads'
+      - '${DATA_DIR}/downloads/complete:/config/Downloads/complete'
+      - '${DATA_DIR}/downloads/incomplete:/config/Downloads/incomplete'
+    environment:
+      - PUID=${PUID}
+      - PGID=${PGID}
+      - TZ=${TZ}
+    depends_on:
+      gluetun:
+        condition: service_healthy
+    restart: unless-stopped
+
+  jellyfin:
+    image: lscr.io/linuxserver/jellyfin:latest
+    container_name: jellyfin
+    network_mode: "service:gluetun"
+    runtime: nvidia
+    volumes:
+      - '${CONFIG_DIR}/jellyfin:/config'
+      - '${DATA_DIR}/tv:/data/tvshows'
+      - '${DATA_DIR}/movies:/data/movies'
+      - '${DATA_DIR}/anime:/data/anime'
+    environment:
+      - PUID=${PUID}
+      - PGID=${PGID}
+      - TZ=${TZ}
+      - NVIDIA_VISIBLE_DEVICES=all
+      - JELLYFIN_PublishedServerUrl=${DOMAIN}
+    depends_on:
+      gluetun:
+        condition: service_healthy
+    restart: unless-stopped
+
+  jellyseerr:
+    image: fallenbagel/jellyseerr:latest
+    container_name: jellyseerr
+    network_mode: "service:gluetun"
+    volumes:
+      - '${CONFIG_DIR}/jellyseerr:/app/config'
+    environment:
+      - PUID=${PUID}
+      - PGID=${PGID}
+      - TZ=${TZ}
+      - LOG_LEVEL=info
+    depends_on:
+      gluetun:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q --spider http://localhost:5055/api/v1/status || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+    restart: unless-stopped
+
+  slinkbot:
+    container_name: slinkbot
+    build:
+      context: ./python
+    network_mode: "service:gluetun"
+    volumes:
+      - '${CONFIG_DIR}/slinkbot:/app/data'  # Persistent storage for SQLite database
+      - './logs:/app/logs'  # Mount logs directory for debugging
+    environment:
+      - PYTHONUNBUFFERED=1
+      # Core API Configuration
+      - DISCORD_BOT_TOKEN=${DISCORD_BOT_TOKEN}
+      - DISCORD_GUILD_ID=${DISCORD_GUILD_ID}
+      - JELLYSEERR_API_KEY=${JELLYSEERR_API_KEY}
+      - JELLYSEERR_URL=${JELLYSEERR_URL}
+      - RADARR_API_KEY=${RADARR_API_KEY}
+      - SONARR_API_KEY=${SONARR_API_KEY}
+      - SABNZBD_API_KEY=${SABNZBD_API_KEY}
+      # Discord Channel Configuration
+      - CHANNEL_SLINKBOT_STATUS=${CHANNEL_SLINKBOT_STATUS}
+      - CHANNEL_REQUEST_STATUS=${CHANNEL_REQUEST_STATUS}
+      - CHANNEL_MOVIE_REQUESTS=${CHANNEL_MOVIE_REQUESTS}
+      - CHANNEL_TV_REQUESTS=${CHANNEL_TV_REQUESTS}
+      - CHANNEL_ANIME_REQUESTS=${CHANNEL_ANIME_REQUESTS}
+      - CHANNEL_DOWNLOAD_QUEUE=${CHANNEL_DOWNLOAD_QUEUE}
+      - CHANNEL_MEDIA_ARRIVALS=${CHANNEL_MEDIA_ARRIVALS}
+      - CHANNEL_CANCEL_REQUEST=${CHANNEL_CANCEL_REQUEST}
+      - CHANNEL_SERVICE_ALERTS=${CHANNEL_SERVICE_ALERTS}
+      # Phase 5 Configuration
+      - DATABASE_PATH=/app/data/slinkbot.db
+      - LOG_LEVEL=INFO
+    mem_limit: 512m
+    command: python3 slinkbot.py  # Main application
+    depends_on:
+      gluetun:
+        condition: service_healthy
+      jellyseerr:
+        condition: service_healthy
+    restart: unless-stopped
+
+  tailscale:
+    image: tailscale/tailscale:latest
+    container_name: tailscale
+    # Use host networking for Tailscale to create a backdoor to all services.
+    # It can access the ports published by gluetun on localhost.
+    network_mode: host
+    cap_add:
+      - NET_ADMIN
+      - NET_RAW
+    volumes:
+      - '${ROOT_DIR}/tailscale:/var/lib/tailscale'
+    environment:
+      - TS_AUTHKEY=${TAILSCALE_AUTH_KEY}
+      - TS_HOSTNAME=slinkbot-stack # The name of the device in your Tailnet
+      - TS_STATE_DIR=/var/lib/tailscale
+    restart: unless-stopped 
+
+  netdata:
+    image: netdata/netdata
+    container_name: netdata
+    pid: host
+    network_mode: host
+    cap_add:
+      - SYS_PTRACE
+      - SYS_ADMIN
+    security_opt:
+      - apparmor:unconfined
+    volumes:
+      - netdata-config:/etc/netdata
+      - netdata-lib:/var/lib/netdata
+      - netdata-cache:/var/cache/netdata
+      - /etc/passwd:/host/etc/passwd:ro
+      - /etc/group:/host/etc/group:ro
+      - /proc:/host/proc:ro
+      - /sys:/host/sys:ro
+      - /etc/os-release:/host/etc/os-release:ro
+    restart: unless-stopped
+    environment:
+      - NETDATA_CLAIM_TOKEN=${NETDATA_CLAIM_TOKEN}
+      - NETDATA_CLAIM_URL=${NETDATA_CLAIM_URL}
+
+volumes:
+  netdata-config:
+  netdata-lib:
+  netdata-cache: 

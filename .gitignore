@@ -1,0 +1,46 @@
+# Environments
+.env
+.env.*
+!.env.example
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+env/
+venv/
+pip-wheel-metadata/
+.installed.cfg
+*.egg-info
+.pytest_cache/
+.mypy_cache/
+.dmypy.json
+dmypy.json
+
+# Docker
+.dockerignore
+docker-compose.override.yml
+
+# Exclude tailscale directory
+tailscale/
+
+# Database files
+python/data/
+*.db
+*.sqlite
+*.sqlite3
+
+# Log files
+logs/
+*.log 
+
+# Additional directories to ignore
+roadmap/
+scripts/
+venv/
+tailscale/
+.claude/
+archive/
+.pytest_cache/
